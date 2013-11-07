@@ -2,9 +2,9 @@ defmodule Mix.Deps.Umbrella do
   @moduledoc false
 
   @doc """
-  Extracts the current project umbrella apps as dependencies.
+  Gets all umbrella dependencies in unfetched format.
   """
-  def children do
+  def unfetched do
     config = Mix.project
 
     if apps_path = config[:apps_path] do
@@ -14,10 +14,27 @@ defmodule Mix.Deps.Umbrella do
       |> Enum.filter(&File.dir?(&1))
       |> extract_umbrella
       |> filter_umbrella(config[:apps])
-      |> to_umbrella_dep(Mix.Project.get)
+      |> to_umbrella_dep()
     else
       []
     end
+  end
+
+  @doc """
+  Gets all umbrella dependencies in fetched format.
+  """
+  def fetched do
+    deps = unfetched
+    apps = Enum.map(deps, &(&1.app))
+
+    Enum.map(deps, fn(umbrella_dep) ->
+      { umbrella_dep, deps } = Mix.Deps.Retriever.fetch(umbrella_dep, [])
+      deps = lc Mix.Dep[] = dep inlist deps,
+                Mix.Deps.available?(dep),
+                dep.app in apps,
+                do: dep.app
+      umbrella_dep.deps(deps)
+    end) |> Mix.Deps.Converger.topsort
   end
 
   defp extract_umbrella(paths) do
@@ -32,10 +49,10 @@ defmodule Mix.Deps.Umbrella do
     lc { app, _ } = pair inlist pairs, app in apps, do: pair
   end
 
-  defp to_umbrella_dep(paths, source) do
+  defp to_umbrella_dep(paths) do
     Enum.map paths, fn({ app, path }) ->
-      Mix.Dep[scm: Mix.SCM.Path, app: app, requirement: nil, manager: :mix, source: source,
-              status: { :ok, nil }, opts: [path: path, dest: Path.expand(path)]]
+      Mix.Dep[scm: Mix.SCM.Path, app: app, requirement: nil, manager: :mix,
+              status: { :ok, nil }, opts: [path: path, dest: Path.expand(path), env: Mix.env]]
     end
   end
 end

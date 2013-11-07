@@ -6,7 +6,6 @@ defmodule Mix.UmbrellaTest do
   test "compile umbrella" do
     in_fixture "umbrella_dep/deps/umbrella", fn ->
       Mix.Project.in_project(:umbrella, ".", fn _ ->
-        Mix.Task.run "deps.get"
         Mix.Task.run "compile"
 
         assert_received { :mix_shell, :info, ["==> bar"] }
@@ -18,6 +17,7 @@ defmodule Mix.UmbrellaTest do
 
         # Ensure foo was loaded and in the same env as Mix.env
         assert_received { :mix_shell, :info, [":foo env is dev"] }
+        assert_received { :mix_shell, :info, [":bar env is dev"] }
       end)
     end
   end
@@ -65,10 +65,49 @@ defmodule Mix.UmbrellaTest do
     Mix.Project.push CycleDeps
 
     in_fixture "umbrella_dep", fn ->
-      assert Enum.map(Mix.Deps.all, & &1.app) == [:foo, :bar, :umbrella]
+      assert Enum.map(Mix.Deps.fetched, & &1.app) == [:foo, :bar, :umbrella]
     end
   after
     Mix.Project.pop
+  end
+
+  test "handles dependencies with cycles and overriden deps" do
+    in_fixture "umbrella_dep/deps/umbrella", fn ->
+      Mix.Project.in_project :umbrella, ".", fn _ ->
+        File.write!("apps/foo/mix.exs", """)
+        defmodule Foo.Mix do
+          use Mix.Project
+
+          def project do
+            # Ensure we have the proper environment
+            :dev = Mix.env
+
+            [ app: :foo,
+              version: "0.1.0",
+              deps: [{ :bar, in_umbrella: true }] ]
+          end
+        end
+        """
+
+        File.write!("apps/bar/mix.exs", """)
+        defmodule Bar.Mix do
+          use Mix.Project
+
+          def project do
+            # Ensure we have the proper environment
+            :dev = Mix.env
+
+            [ app: :bar,
+              version: "0.1.0",
+              deps: [{ :a, path: "deps/a" },
+                     { :b, path: "deps/b" }] ]
+          end
+        end
+        """
+
+        assert Enum.map(Mix.Deps.fetched, & &1.app) == [:a, :b, :bar, :foo]
+      end
+    end
   end
 
   test "list deps for umbrella as dependency" do

@@ -1,5 +1,5 @@
 defrecord Mix.Dep, [ scm: nil, app: nil, requirement: nil, status: nil, opts: nil,
-                     deps: [], source: nil, manager: nil, from: nil ] do
+                     deps: [], extra: nil, manager: nil, from: nil ] do
   @moduledoc """
   This is a record that keeps information about your project
   dependencies. It contains:
@@ -9,18 +9,18 @@ defrecord Mix.Dep, [ scm: nil, app: nil, requirement: nil, status: nil, opts: ni
   * `requirement` - a binary or regex with the dependency's requirement
   * `status` - the current status of the dependency, check `Mix.Deps.format_status/1` for more info;
   * `opts` - the options given by the developer
-  * `deps` - dependencies of this dependency
-  * `source` - any possible configuration associated with the `manager` field,
-      `rebar.config` for rebar or the `Mix.Project` for Mix
+  * `deps` - the app names of the dependencies of this dependency
   * `manager` - the project management, possible values: `:rebar` | `:mix` | `:make` | `nil`
   * `from` - path to the file where the dependency was defined
-
+  * `extra` - a slot for adding extra configuration based on the scm.
+              the information on this field is private to the scm and
+              should not be relied on.
   """
 end
 
 defmodule Mix.Deps do
   @moduledoc %S"""
-  A module with common functions to work with dependencies.
+  Common functions to work with dependencies.
 
   Dependencies must be specified in the Mix application in the
   following format:
@@ -33,12 +33,23 @@ defmodule Mix.Deps do
   and opts is a keyword lists that may include options for the underlying
   SCM or options used by Mix. Each set of options is documented below.
 
+  Inside Mix, those dependencies are converted to a `Mix.Dep` record.
+  This module provides conveniences to work with those dependencies
+  and the dependencies are usually in two specific states: fetched and
+  unfetched.
+
+  When a dependency is unfetched, it means Mix only parsed its specification
+  and made no attempt to actually fetch the dependency or validate its
+  status. When the dependency is fetched, it means Mix attempted to fetch
+  and validate it, the status is set in the status field.
+
   ## Mix options
 
   * `:app` - Do not try to read the app file for this dependency
   * `:env` - The environment to run the dependency on, defaults to :prod
   * `:compile` - A command to compile the dependency, defaults to a mix,
                  rebar or make command
+  * `:optional` - The dependency is optional and used only to specify requirements
 
   ## Git options (`:git`)
 
@@ -66,37 +77,10 @@ defmodule Mix.Deps do
   """
 
   @doc """
-  Returns all dependencies recursively as a `Mix.Dep` record.
-
-  ## Exceptions
-
-  This function raises an exception if any of the dependencies
-  provided in the project are in the wrong format.
-  """
-  def all do
-    { deps, _ } = Mix.Deps.Converger.all(nil, fn(dep, acc) -> { dep, acc } end)
-    deps
-  end
-
-  @doc """
-  Maps and reduces over all dependencies, one by one.
-
-  This is useful in case you want to retrieve the dependency
-  tree for a project but process and change them along the way.
-  For example, `mix deps.get` uses it to get all dependencies
-  by first fetching the parent and then updating the tree as it goes.
-
-  The callback expects the current dependency and the accumulator
-  as arguments. The accumulator is returned as result.
-  """
-  def all(acc, callback) do
-    { _deps, acc } = Mix.Deps.Converger.all(acc, callback)
-    acc
-  end
-
-  @doc """
-  Returns all children dependencies for the current project.
-  Umbrella projects have their apps treated as direct dependencies.
+  Returns all children dependencies for the current project,
+  as well as the defined apps in case of umbrella projects.
+  The children dependencies returned by this function were
+  not fetched yet.
 
   ## Exceptions
 
@@ -106,36 +90,30 @@ defmodule Mix.Deps do
   defdelegate children(), to: Mix.Deps.Retriever
 
   @doc """
-  Returns all given dependencies and their depending dependencies.
+  Returns fetched dependencies recursively as a `Mix.Dep` record.
+
+  ## Exceptions
+
+  This function raises an exception if any of the dependencies
+  provided in the project are in the wrong format.
   """
-  def with_depending(deps, all_deps // all) do
-    deps ++ do_with_depending(deps, all_deps)
-      |> Enum.uniq(&(&1.app))
-  end
-
-  defp do_with_depending([], _all_deps) do
-    []
-  end
-
-  defp do_with_depending(deps, all_deps) do
-    dep_names = Enum.map(deps, fn dep -> dep.app end)
-
-    parents = Enum.filter all_deps, fn dep ->
-      Enum.any?(dep.deps, fn child_dep -> child_dep.app in dep_names end)
-    end
-
-    do_with_depending(parents, all_deps) ++ parents
+  def fetched do
+    { deps, _ } = Mix.Deps.Converger.all(nil, fn(dep, acc) -> { dep, acc } end)
+    Mix.Deps.Converger.topsort(deps)
   end
 
   @doc """
-  Receives a list of dependency names and returns dependency records.
-  Logs a message if the dependency could not be found.
+  Receives a list of  dependency names and returns fetched dependency
+  records. Logs a message if the dependency could not be found.
+
+  ## Exceptions
+
+  This function raises an exception if any of the dependencies
+  provided in the project are in the wrong format.
   """
-  def by_name(given, all_deps // all) do
+  def fetched_by_name(given, all_deps // fetched) do
     # Ensure all apps are atoms
-    apps = Enum.map given, fn(app) ->
-      if is_binary(app), do: binary_to_atom(app), else: app
-    end
+    apps = to_app_names(given)
 
     # We need to keep the order of all, which properly orders deps
     deps = Enum.filter all_deps, fn(dep) -> dep.app in apps end
@@ -152,25 +130,56 @@ defmodule Mix.Deps do
   end
 
   @doc """
-  Run the given `fun` inside the given dependency project by
+  Maps and reduces over all unfetched dependencies, one by one.
+
+  This is useful in case you want to retrieve the dependency
+  tree for a project but process and change them along the way.
+  For example, `mix deps.get` uses it to get all dependencies
+  by first fetching the parent and then updating the tree as it goes.
+
+  The callback expects the current dependency and the accumulator
+  as arguments. The accumulator is returned as result.
+
+  ## Exceptions
+
+  This function raises an exception if any of the dependencies
+  provided in the project are in the wrong format.
+  """
+  def unfetched(acc, callback) do
+    { deps, acc } = Mix.Deps.Converger.all(acc, callback)
+    { Mix.Deps.Converger.topsort(deps), acc }
+  end
+
+  @doc """
+  Receives a list of dependency names and maps and reduces over
+  them.
+
+  ## Exceptions
+
+  This function raises an exception if any of the dependencies
+  provided in the project are in the wrong format.
+  """
+  def unfetched_by_name(given, acc, callback) do
+    names = to_app_names(given)
+
+    unfetched(acc, fn(dep, acc) ->
+      if dep.app in names do
+        callback.(dep, acc)
+      else
+        { dep, acc }
+      end
+    end)
+  end
+
+  @doc """
+  Runs the given `fun` inside the given dependency project by
   changing the current working directory and loading the given
   project onto the project stack.
 
-  In case the project is a rebar dependency, a `Mix.Rebar` project
-  will be pushed into the stack to simulate the rebar configuration.
+  This function only works for mix dependencies.
+  It is expected a fetched dependency as argument.
   """
   def in_dependency(dep, post_config // [], fun)
-
-  def in_dependency(Mix.Dep[manager: :rebar, opts: opts], post_config, fun) do
-    # Use post_config for rebar deps
-    Mix.Project.post_config(post_config)
-    Mix.Project.push(Mix.Rebar)
-    try do
-      File.cd!(opts[:dest], fn -> fun.(Mix.Rebar) end)
-    after
-      Mix.Project.pop
-    end
-  end
 
   def in_dependency(Mix.Dep[app: app, opts: opts], post_config, fun) do
     env     = opts[:env] || :prod
@@ -191,7 +200,9 @@ defmodule Mix.Deps do
     do: "ok"
 
   def format_status(Mix.Dep[status: { :noappfile, path }]),
-    do: "could not find an app file at #{Path.relative_to_cwd(path)}"
+    do: "could not find an app file at #{Path.relative_to_cwd(path)}, " <>
+        "this may happen when you specified the wrong application name in your deps " <>
+        "or if the dependency did not compile (which can be amended with `mix deps.compile`)"
 
   def format_status(Mix.Dep[status: { :invalidapp, path }]),
     do: "the app file at #{Path.relative_to_cwd(path)} is invalid"
@@ -200,7 +211,7 @@ defmodule Mix.Deps do
     do: "the app file contains an invalid version: #{inspect vsn}"
 
   def format_status(Mix.Dep[status: { :nomatchvsn, vsn }, requirement: req]),
-    do: "the dependency does not match the requirement #{req}, got #{vsn}"
+    do: "the dependency does not match the requirement #{inspect req}, got #{inspect vsn}"
 
   def format_status(Mix.Dep[status: { :lockmismatch, _ }]),
     do: "lock mismatch: the dependency is out of date"
@@ -211,16 +222,24 @@ defmodule Mix.Deps do
   def format_status(Mix.Dep[status: :nolock]),
     do: "the dependency is not locked"
 
+  def format_status(Mix.Dep[app: app, status: { :divergedreq, other }] = dep) do
+    "the dependency #{app} defined\n" <>
+    "#{dep_status(dep)}" <>
+    "\n  does not match the requirement specified\n" <>
+    "#{dep_status(other)}" <>
+    "\n  Ensure they match or specify one of the above in your #{inspect Mix.Project.get} deps and set `override: true`"
+  end
+
   def format_status(Mix.Dep[app: app, status: { :diverged, other }] = dep) do
-    "different specs were given for the #{inspect app} app:\n" <>
+    "different specs were given for the #{app} app:\n" <>
     "#{dep_status(dep)}#{dep_status(other)}" <>
-    "\n  Ensure they match or specify one in your #{inspect Mix.Project.get} deps and set `override: true`"
+    "\n  Ensure they match or specify one of the above in your #{inspect Mix.Project.get} deps and set `override: true`"
   end
 
   def format_status(Mix.Dep[app: app, status: { :overriden, other }] = dep) do
     "the dependency #{app} in #{Path.relative_to_cwd(dep.from)} is overriding a child dependency:\n" <>
     "#{dep_status(dep)}#{dep_status(other)}" <>
-    "\n  Specify one in your #{inspect Mix.Project.get} deps and set `override: true`"
+    "\n  Ensure they match or specify one of the above in your #{inspect Mix.Project.get} deps and set `override: true`"
   end
 
   def format_status(Mix.Dep[status: { :unavailable, _ }]),
@@ -229,30 +248,29 @@ defmodule Mix.Deps do
   def format_status(Mix.Dep[status: { :elixirlock, _ }]),
     do: "the dependency is built with an out-of-date elixir version, run `mix deps.get`"
 
+  def format_status(Mix.Dep[status: { :elixirreq, req }]),
+    do: "the dependency requires Elixir #{req} but you are running on v#{System.version}"
+
   defp dep_status(Mix.Dep[app: app, requirement: req, opts: opts, from: from]) do
-    info = { app, req, Dict.drop(opts, [:dest, :lock, :env]) }
+    info = { app, req, Dict.drop(opts, [:dest, :lock, :env, :drop]) }
     "\n  > In #{Path.relative_to_cwd(from)}:\n    #{inspect info}\n"
   end
 
   @doc """
-  Check the lock for the given dependency and update its status accordingly.
+  Checks the lock for the given dependency and update its status accordingly.
   """
   def check_lock(Mix.Dep[scm: scm, app: app, opts: opts] = dep, lock) do
     if available?(dep) do
-      if vsn = old_elixir_lock(dep) do
-        dep.status({ :elixirlock, vsn })
-      else
-        rev  = lock[app]
-        opts = Keyword.put(opts, :lock, rev)
+      rev  = lock[app]
+      opts = Keyword.put(opts, :lock, rev)
 
-        case scm.lock_status(opts) do
-          :mismatch ->
-            dep.status(if rev, do: { :lockmismatch, rev }, else: :nolock)
-          :outdated ->
-            dep.status :lockoutdated
-          :ok ->
-            dep
-        end
+      case scm.lock_status(opts) do
+        :mismatch ->
+          dep.status(if rev, do: { :lockmismatch, rev }, else: :nolock)
+        :outdated ->
+          dep.status :lockoutdated
+        :ok ->
+          dep
       end
     else
       dep
@@ -260,41 +278,44 @@ defmodule Mix.Deps do
   end
 
   @doc """
-  Updates the dependency.
-
-  This function is useful when the given dependency changes
-  (for example, it was just checked out) and you want to refetch
-  its information.
-  """
-  defdelegate update(dep), to: Mix.Deps.Retriever
-
-  @doc """
   Check if a dependency is ok.
   """
   def ok?(Mix.Dep[status: { :ok, _ }]), do: true
-  def ok?(_), do: false
+  def ok?(Mix.Dep[]), do: false
 
   @doc """
-  Check if a dependency is available.
+  Check if a dependency is available. Available dependencies
+  are the ones that can be compiled, loaded, etc.
   """
   def available?(Mix.Dep[status: { :overriden, _ }]),    do: false
   def available?(Mix.Dep[status: { :diverged, _ }]),     do: false
+  def available?(Mix.Dep[status: { :divergedreq, _ }]),  do: false
+  def available?(Mix.Dep[status: { :elixirreq, _ }]),    do: false
   def available?(Mix.Dep[status: { :unavailable, _ }]),  do: false
-  def available?(_), do: true
+  def available?(Mix.Dep[]), do: true
 
   @doc """
-  Check if a dependency is out of date considering its
+  Check if a dependency can be updated.
+  """
+  def updatable?(Mix.Dep[status: { :elixirreq, _ }]), do: true
+  def updatable?(dep), do: available?(dep)
+
+  @doc """
+  Check if a dependency is out of date, also considering its
   lock status. Therefore, be sure to call `check_lock` before
   invoking this function.
+
+  Out of date dependencies are fixed by simply running `deps.get`.
   """
   def out_of_date?(Mix.Dep[status: { :lockmismatch, _ }]), do: true
   def out_of_date?(Mix.Dep[status: :lockoutdated]),        do: true
   def out_of_date?(Mix.Dep[status: :nolock]),              do: true
   def out_of_date?(Mix.Dep[status: { :elixirlock, _ }]),   do: true
-  def out_of_date?(dep),                                   do: not available?(dep)
+  def out_of_date?(Mix.Dep[status: { :unavailable, _ }]),  do: true
+  def out_of_date?(Mix.Dep[]),                             do: false
 
   @doc """
-  Format a dependency for printing.
+  Formats a dependency for printing.
   """
   def format_dep(Mix.Dep[scm: scm, app: app, status: status, opts: opts]) do
     version =
@@ -308,6 +329,7 @@ defmodule Mix.Deps do
 
   @doc """
   Returns all compile paths for the dependency.
+  Expects a fetched dependency.
   """
   def compile_path(Mix.Dep[app: app, opts: opts, manager: manager]) do
     if manager == :mix do
@@ -321,6 +343,7 @@ defmodule Mix.Deps do
 
   @doc """
   Returns all load paths for the dependency.
+  Expects a fetched dependency.
   """
   def load_paths(Mix.Dep[manager: :mix, app: app, opts: opts]) do
     Mix.Project.in_project(app, opts[:dest], fn _ ->
@@ -328,9 +351,9 @@ defmodule Mix.Deps do
     end) |> Enum.uniq
   end
 
-  def load_paths(Mix.Dep[manager: :rebar, opts: opts, source: source]) do
+  def load_paths(Mix.Dep[manager: :rebar, opts: opts, extra: extra]) do
     # Add root dir and all sub dirs with ebin/ directory
-    sub_dirs = Enum.map(source[:sub_dirs] || [], fn path ->
+    sub_dirs = Enum.map(extra[:sub_dirs] || [], fn path ->
       Path.join(opts[:dest], path)
     end)
 
@@ -341,7 +364,7 @@ defmodule Mix.Deps do
       |> Enum.filter(&File.dir?(&1))
   end
 
-  def load_paths(Mix.Dep[manager: manager, opts: opts]) when manager in [:make, nil] do
+  def load_paths(Mix.Dep[manager: manager, opts: opts]) when manager in [:make] do
     [ Path.join(opts[:dest], "ebin") ]
   end
 
@@ -368,13 +391,62 @@ defmodule Mix.Deps do
 
   ## Helpers
 
-  # Returns the elixir lock version of the given dependency
-  defp old_elixir_lock(dep) do
-    in_dependency(dep, fn _ ->
-      old_vsn = Mix.Deps.Lock.elixir_vsn
-      if old_vsn && old_vsn != System.version do
-        old_vsn
+  @doc false
+  # Called by deps.get and deps.update
+  def finalize(all_deps, apps, lock, opts) do
+    deps = fetched_by_name(apps, all_deps)
+
+    # Do not attempt to compile dependencies that are not available.
+    # mix deps.check at the end will emit proper status in case they failed.
+    deps = Enum.filter(deps, &available?/1)
+
+    # Note we only retrieve the parent dependencies of the updated
+    # deps if all dependencies are available. This is because if a
+    # dependency is missing, it could be a children of the parent
+    # (aka a sibling) which would make parent compilation fail.
+    if Enum.all?(all_deps, &available?/1) do
+      deps = with_depending(deps, all_deps)
+    end
+
+    apps = Enum.map(deps, &(&1.app))
+    Mix.Deps.Lock.write(lock)
+
+    unless opts[:no_compile] do
+      # TODO: This is a temporary workaround to the fact
+      # we do not loadpaths for deps.get and deps.update tasks
+      # in the CLI.
+      Mix.Task.run("deps.loadpaths", ["--no-deps-check"])
+      Mix.Task.reenable("deps.loadpaths")
+
+      args = if opts[:quiet], do: ["--quiet"|apps], else: apps
+      Mix.Task.run("deps.compile", args)
+      unless opts[:no_deps_check] do
+        Mix.Task.run("deps.check", [])
       end
-    end)
+    end
+  end
+
+  defp with_depending(deps, all_deps) do
+    (deps ++ do_with_depending(deps, all_deps)) |> Enum.uniq(&(&1.app))
+  end
+
+  defp do_with_depending([], _all_deps) do
+    []
+  end
+
+  defp do_with_depending(deps, all_deps) do
+    dep_names = Enum.map(deps, fn dep -> dep.app end)
+
+    parents = Enum.filter all_deps, fn dep ->
+      Enum.any?(dep.deps, &(&1 in dep_names))
+    end
+
+    do_with_depending(parents, all_deps) ++ parents
+  end
+
+  defp to_app_names(given) do
+    Enum.map given, fn(app) ->
+      if is_binary(app), do: binary_to_atom(app), else: app
+    end
   end
 end

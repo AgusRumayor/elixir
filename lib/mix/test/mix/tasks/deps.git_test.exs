@@ -59,7 +59,7 @@ defmodule Mix.Tasks.DepsGitTest do
       Mix.Task.clear
 
       Mix.Tasks.Deps.Update.run ["--all"]
-      message = "* Updating git_repo 0.1.0 (#{fixture_path("git_repo")})"
+      message = "* Updating git_repo (#{fixture_path("git_repo")})"
       assert_received { :mix_shell, :info, [^message] }
       assert_received { :mix_shell, :info, ["* Compiling git_repo"] }
       assert_received { :mix_shell, :info, ["Compiled lib/git_repo.ex"] }
@@ -231,8 +231,6 @@ defmodule Mix.Tasks.DepsGitTest do
 
   test "updates the repo when the lock updates" do
     Mix.Project.push GitApp
-
-    # Get git repo first revision
     [last, first|_] = get_git_repo_revs
 
     in_fixture "no_mixfile", fn ->
@@ -270,8 +268,6 @@ defmodule Mix.Tasks.DepsGitTest do
 
   test "updates the repo and the lock when the mixfile updates" do
     Mix.Project.push GitApp
-
-    # Get git repo first revision
     [last, first|_] = get_git_repo_revs
 
     in_fixture "no_mixfile", fn ->
@@ -312,10 +308,44 @@ defmodule Mix.Tasks.DepsGitTest do
     Mix.Project.pop
   end
 
+  test "does not load bad mix files on get" do
+    Mix.Project.push GitApp
+    [last, first, bad|_] = get_git_repo_revs
+
+    in_fixture "no_mixfile", fn ->
+      Mix.Deps.Lock.write [git_repo: { :git, fixture_path("git_repo"), bad, [] }]
+      catch_error(Mix.Tasks.Deps.Get.run [])
+
+      Mix.Deps.Lock.write [git_repo: { :git, fixture_path("git_repo"), last, [] }]
+      Mix.Tasks.Deps.Get.run []
+      assert File.read!("mix.lock") =~ last
+    end
+  after
+    purge [GitRepo, GitRepo.Mix]
+    Mix.Project.pop
+  end
+
+  test "does not load bad mix files on update" do
+    Mix.Project.push GitApp
+    [last, first, bad|_] = get_git_repo_revs
+
+    in_fixture "no_mixfile", fn ->
+      Mix.Deps.Lock.write [git_repo: { :git, fixture_path("git_repo"), bad, [] }]
+      catch_error(Mix.Tasks.Deps.Get.run [])
+
+      Mix.Tasks.Deps.Update.run ["git_repo"]
+      Mix.Tasks.Deps.Compile.run ["git_repo"]
+      assert File.read!("mix.lock") =~ last
+    end
+  after
+    purge [GitRepo, GitRepo.Mix]
+    Mix.Project.pop
+  end
+
   defp refresh(post_config) do
-    current = Mix.Project.pop
+    { current, file } = Mix.Project.pop
     Mix.Project.post_config(post_config)
-    Mix.Project.push(current)
+    Mix.Project.push(current, file)
   end
 
   defp get_git_repo_revs do

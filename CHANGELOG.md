@@ -1,3 +1,21 @@
+# v0.11.1 (2013-11-07)
+
+* Enhancements
+  * [Mix] Improve dependency convergence by explicitly checking each requirement instead of expecting all requirements to be equal
+  * [Mix] Support optional dependencies with `optional: true`. Optional dependencies are downloaded for the current project but they are automatically skipped when such project is used as a dependency
+
+* Bug fixes
+  * [Kernel] Set compilation status per ParallelCompiler and not globally
+  * [Mix] Ensure Mix does not load previous dependencies versions before `deps.get`/`deps.update`
+  * [Mix] Ensure umbrella apps are sorted before running recursive commands
+  * [Mix] Ensure umbrella apps run in the same environment as the parent project
+  * [Mix] Ensure dependency tree is topsorted before compiling
+  * [Mix] Raise error when duplicated projects are pushed into the stack
+  * [URI] Allow lowercase escapes in URI
+
+* Backwards incompatible changes
+  * [Mix] Setting `:load_paths` in your project configuration is deprecated
+
 # v0.11.0 (2013-11-02)
 
 * Enhancements
@@ -18,7 +36,7 @@
   * [Protocol] Protocols now provide `impl_for/1` and `impl_for!/1` functions which receive a structure and returns its respective implementation, otherwise returns nil or an error
   * [Set] Document and enforce all sets use the match operator (`===`) when checking for keys
   * [String] Update to Unicode 6.3.0
-  * [String] Add `Enum.slice/2` with a range
+  * [String] Add `String.slice/2` with a range
 
 * Bug fixes
   * [Exception] Ensure `defexception` fields can be set dynamically

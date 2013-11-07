@@ -5,6 +5,11 @@ defmodule CodeTest do
   import PathHelpers
 
   def one, do: 1
+  def genmodule(name) do
+    defmodule name do
+      Kernel.LexicalTracker.remotes(__MODULE__)
+    end
+  end
 
   contents = quote do
     defmodule CodeTest.Sample do
@@ -64,15 +69,6 @@ defmodule CodeTest do
     assert Code.require_file(fixture_path("code_sample.exs")) != nil
   end
 
-  test :path_manipulation do
-    path = __DIR__
-    Code.prepend_path path
-    assert to_char_list(path) in :code.get_path
-
-    Code.delete_path path
-    refute to_char_list(path) in :code.get_path
-  end
-
   test :file do
     assert :filename.absname(__FILE__) == __FILE__
   end
@@ -108,6 +104,13 @@ defmodule CodeTest do
     assert Keyword.get(compile, :source) != nil
   end
 
+  test :compile_string_works_accross_lexical_scopes do
+    assert [{ CompileCrossSample, _ }] = Code.compile_string("CodeTest.genmodule CompileCrossSample")
+  after
+    :code.purge CompileCrossSample
+    :code.delete CompileCrossSample
+  end
+
   test :compile_string do
     assert [{ CompileStringSample, _ }] = Code.compile_string("defmodule CompileStringSample, do: :ok")
   after
@@ -130,5 +133,18 @@ defmodule CodeTest do
   test :ensure_compiled? do
     assert Code.ensure_compiled?(__MODULE__)
     refute Code.ensure_compiled?(Unknown.Module)
+  end
+end
+
+defmodule Code.SyncTest do
+  use ExUnit.Case
+
+  test :path_manipulation do
+    path = Path.join(__DIR__, "fixtures")
+    Code.prepend_path path
+    assert to_char_list(path) in :code.get_path
+
+    Code.delete_path path
+    refute to_char_list(path) in :code.get_path
   end
 end

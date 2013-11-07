@@ -7,7 +7,7 @@ defmodule String do
   ## String and binary operations
 
   The functions in this module act according to the
-  Unicode Standard, version 6.2.0. For example,
+  Unicode Standard, version 6.3.0. For example,
   `capitalize/1`, `downcase/1`, `strip/1` are provided by this
   module.
 
@@ -943,18 +943,6 @@ defmodule String do
       "" -> nil
       _ -> acc
     end
-  end
-
-  @doc false
-  def to_integer(string) do
-    IO.write "String.to_integer/1 is deprecated, please use Integer.parse/1 instead\n#{Exception.format_stacktrace}"
-    Integer.parse(string)
-  end
-
-  @doc false
-  def to_float(string) do
-    IO.write "String.to_float/1 is deprecated, please use Float.parse/1 instead\n#{Exception.format_stacktrace}"
-    Float.parse(string)
   end
 
   @doc """

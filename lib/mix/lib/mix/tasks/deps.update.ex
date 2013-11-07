@@ -20,8 +20,7 @@ defmodule Mix.Tasks.Deps.Update do
 
   """
 
-  import Mix.Deps, only: [ all: 0, all: 2, available?: 1, by_name: 2,
-                           with_depending: 2, format_dep: 1 ]
+  import Mix.Deps, only: [unfetched: 2, unfetched_by_name: 3, updatable?: 1, format_dep: 1]
 
   def run(args) do
     Mix.Project.get! # Require the project to be available
@@ -29,13 +28,9 @@ defmodule Mix.Tasks.Deps.Update do
 
     cond do
       opts[:all] ->
-        acc = all(init, &deps_updater/2)
+        acc = unfetched(init, &deps_updater/2)
       rest != [] ->
-        all_deps = all
-        deps = by_name(rest, all_deps)
-          |> Enum.map(&check_unavailable!/1)
-          |> with_depending(all_deps)
-        { _, acc } = Enum.map_reduce(deps, init, &deps_updater/2)
+        acc = unfetched_by_name(rest, init, &deps_updater/2)
       true ->
         raise Mix.Error, message: "mix deps.update expects dependencies as arguments or " <>
                                   "the --all option to update all dependencies"
@@ -48,23 +43,12 @@ defmodule Mix.Tasks.Deps.Update do
     { [], Mix.Deps.Lock.read }
   end
 
-  defp finalize_update({ apps, lock }, opts) do
-    apps = Enum.reverse(apps)
-    Mix.Deps.Lock.write(lock)
-
-    unless opts[:no_compile] do
-      case opts[:quiet] do
-        true ->
-          Mix.Task.run("deps.compile", ["--quiet"|apps])
-        _ ->
-          Mix.Task.run("deps.compile", apps)
-      end
-      unless opts[:no_deps_check], do: Mix.Task.run("deps.check", [])
-    end
+  defp finalize_update({ all_deps, { apps, lock } }, opts) do
+    Mix.Deps.finalize(all_deps, apps, lock, opts)
   end
 
   defp deps_updater(dep, { acc, lock }) do
-    if available?(dep) do
+    if updatable?(dep) do
       Mix.Dep[app: app, scm: scm, opts: opts] = dep
       Mix.shell.info "* Updating #{format_dep(dep)}"
 
@@ -75,17 +59,9 @@ defmodule Mix.Tasks.Deps.Update do
           lock
         end
 
-      { Mix.Deps.update(dep), { [app|acc], lock } }
+      { dep, { [app|acc], lock } }
     else
       { dep, { acc, lock } }
     end
-  end
-
-  defp check_unavailable!(dep) do
-    unless available?(dep) do
-      raise Mix.Error, message: "Cannot update dependency #{dep.app} because " <>
-        "it isn't available, run `mix deps.get` first"
-    end
-    dep
   end
 end

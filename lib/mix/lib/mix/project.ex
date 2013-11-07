@@ -3,8 +3,6 @@ defmodule Mix.Project do
   A module that provides conveniences for defining and working
   with projects.
 
-  ## Examples
-
   In order to configure Mix, a developer needs to use
   `Mix.Project` in a module and define a function named
   `project` that returns a keyword list with configuration.
@@ -21,12 +19,12 @@ defmodule Mix.Project do
       end
 
   After being defined, the configuration for this project can be read
-  as `Mix.project/0`. Notice that `config/0` won't fail if a
+  as `Mix.project/0`. Notice that `Mix.project/0` won't fail if a
   project is not defined; this allows many mix tasks to work
   even without a project.
 
   In case the developer needs a project or wants to access a special
-  function in the project, he can call `Mix.Project.get!/0`
+  function in the project, he/she can call `Mix.Project.get!/0`
   which fails with `Mix.NoProjectError` in case a project is not
   defined.
   """
@@ -43,16 +41,21 @@ defmodule Mix.Project do
   # Invoked after each Mix.Project is compiled.
   @doc false
   def __after_compile__(env, _binary) do
-    push env.module
+    push env.module, env.file
   end
 
   # Push a project onto the project stack. Only
   # the top of the stack can be accessed.
   @doc false
-  def push(atom) when is_atom(atom) do
+  def push(atom, file // "nofile") when is_atom(atom) do
     config = Keyword.merge default_config, get_project_config(atom)
-
-    Mix.Server.cast({ :push_project, atom, config })
+    case Mix.Server.call({ :push_project, atom, config, file }) do
+      :ok ->
+        :ok
+      { :error, other } when is_binary(other) ->
+        raise Mix.Error, message: "Trying to load #{inspect atom} from #{inspect file}" <>
+          " but another project with the same name was already defined at #{inspect other}"
+    end
   end
 
   # Pops a project from the stack.
@@ -162,15 +165,14 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns all load paths for this project, collecting
-  all `:load_paths` in case of umbrella apps.
+  Returns all load paths for this project.
   """
   def load_paths do
     if umbrella? do
       []
     else
       [compile_path]
-    end ++ Enum.map(config[:load_paths], &Path.expand(&1))
+    end
   end
 
   # Loads mix.exs in the current directory or loads the project from the
@@ -211,7 +213,6 @@ defmodule Mix.Project do
       erlc_paths: ["src"],
       erlc_include_path: "include",
       erlc_options: [:debug_info],
-      load_paths: [],
       lockfile: "mix.lock",
       preferred_cli_env: [{ "test", :test }] ]
   end
@@ -221,10 +222,17 @@ defmodule Mix.Project do
   defp get_project_config(atom) do
     config = atom.project
 
-    if env = config[:env][Mix.env] do
-      config |> Keyword.delete(:env) |> Keyword.merge(env)
-    else
-      config
+    config =
+      if env = config[:env][Mix.env] do
+        config |> Keyword.delete(:env) |> Keyword.merge(env)
+      else
+        config
+      end
+
+    if config[:load_paths] do
+      IO.write "Setting :load_paths inside mix.exs is deprecated and has no effect\n#{Exception.format_stacktrace}"
     end
+
+    config
   end
 end
